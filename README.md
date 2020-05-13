@@ -1,2 +1,5 @@
-# predictin_NBAcareer_and_draft_success
-Predicting the Draft and Career Success of NBA Players from College Statistics and Draft Timing
+# predicting_NBA_career_and_draft_success
+Abstract
+
+National Basketball Association teams are spending an increasing amount of time on scouting draft prospects from college as the rising NBA salary gap helps players earn lucrative contracts while pushes team to spend more. As the stakes of NBA draft are getting higher, teams have complex drafting strategies based on college statistics and positional fits that are intended to predict career success of players in the NBA. In this paper, we focus on the timing when college players declare the draft along with their college statistics. We create prediction models for career success, draft rank and draft success with different predictors and outcome variables by conducting multiple linear regression, random forest and stochastic gradient boosting. With these modeling approaches, we find that the variables that are most predictive of career success in NBA are not necessarily predictive of draft rank. The finding suggest that we can predict career success and the ideal draft rank with Win Shares per 48 minutes and use classifiers to measure the draft success of players.
+
