@@ -1,0 +1,618 @@
+---
+title: "R Notebook"
+output: html_notebook
+---
+
+This is an [R Markdown](http://rmarkdown.rstudio.com) Notebook. When you execute code within the notebook, the results appear beneath the code. 
+
+Try executing this chunk by clicking the *Run* button within the chunk or by placing your cursor inside it and pressing *Cmd+Shift+Enter*. 
+
+```{r}
+library(ggplot2)
+library(dplyr)
+library(MASS)
+library(reshape2)
+library(randomForest) 
+library(pdp) 
+library(mice)
+library(readr)
+library(car)
+library(pdp)
+```
+
+Add a new chunk by clicking the *Insert Chunk* button on the toolbar or by pressing *Cmd+Option+I*.
+
+When you save the notebook, an HTML file containing the code and output will be saved alongside it (click the *Preview* button or press *Cmd+Shift+K* to preview the HTML file). 
+
+The preview shows you a rendered HTML copy of the contents of the editor. Consequently, unlike *Knit*, *Preview* does not run any R code chunks. Instead, the output of the chunk when it was last run in the editor is displayed.
+
+```{r}
+draft <- read.csv("draft_analysis_ver4.csv",header=T, strip.white=TRUE)
+#remove the players with neither college nor nba stats from basketball reference; 
+#put a 1 in their FGP during data collection instead of creating a dummy variable
+#draft <- draft[draft$FGP != 1,]
+draft$Position <- as.factor(draft$Position)
+draft$Class.Year <- as.factor(draft$Class.Year)
+draft <- draft[c(1:74)]
+head(draft)
+
+```
+```{r}
+#remove X(empty column), year(season of the stats), conference, personal fouls, 
+cleaned <- subset(draft, select = -c(X,X.1,School, School.1,Conf.1,Year,Year.1,PF, PF.1))
+head(cleaned)
+```
+
+
+```{r}
+#remove minutes, G and GS
+#remove 2P, 2PA, 2P.PG as it overlaps with FG and 3FG
+cleaned <- subset(cleaned, select = -c(Minutes, MP, MP.1,G, G.1,GS,GS.1, P2M,P2M.1, P2MA, P2MA.1, P2.PG, P2.PG1))
+```
+
+
+```{r}
+test <- cleaned[421:540,]
+cleaned <- cleaned[1:420,]
+str(test)
+```
+
+```{r}
+domestic <- subset(cleaned, !Class.Year == 'IN')
+```
+
+
+$$ Exploration \ Data \ Analysis $$
+```{r}
+summary(cleaned)
+
+draft_dis <- data.frame(year=c("Freshman", "Sophomore", "Junior", "Senior"),
+                number=c(58, 74, 73, 127))
+int_dis <- data.frame(year=c("Domestic", "International"),
+                number=c(334, 86))
+p<- ggplot(data=draft_dis, aes(x=year, number))+ ylim(0,150) +ggtitle("NBA Draft Picks by Class Year") +
+  geom_bar(stat="identity", width=0.5) + coord_flip()
+p
+q<- ggplot(data=int_dis, aes(x=year, number))+ ylim(0,350) +ggtitle("Domestic v.s. International NBA Draft Picks") +
+  geom_bar(stat="identity", width=0.3)
+q
+
+```
+
+
+```{r}
+
+#correlation heatmap
+data.comp.numeric <- domestic %>% select_if(is.numeric)
+corr.table <- melt(cor(data.comp.numeric, use = "pairwise.complete.obs")) %>% mutate(value = abs(value))
+
+#cor(data$price, data$exprice, use = "complete.obs")
+ggplot(corr.table, aes(x=Var1, y=Var2)) + 
+  geom_tile(aes(fill=value)) +
+  scale_x_discrete(limits = rev(levels(corr.table$Var1))) +
+  scale_fill_gradient( low = "#56B1F7", high = "#132B43") +     #lightblue to darkblue
+  theme(axis.text.x = element_text(angle = 25, hjust = 1,size = 4),
+      axis.text.y = element_text(size = 6)  )
+```
+
+```{r}
+#seems like minutes is highly correlated with performance on the court and will be taken out during analysis
+#question: should G and GS be taken out beccause the college stats is based on stats per game while G and GS is a season stat?
+name.num <- sapply(domestic, is.numeric)
+cor(domestic[name.num],use = "pairwise.complete.obs")
+```
+
+```{r}
+#high correlation between FG and FG attempted; remove FGA in the model
+cor(domestic$FG, domestic$FGA, method = c("pearson"))
+cor(domestic$FG.PG, domestic$FG, method = c("pearson"))
+cor(domestic$FG.PG, domestic$FGA, method = c("pearson"))
+```
+
+```{r}
+#high correlation between FT and FT attempted; remove FT in the model as it is more correlated with FT percentage
+cor(domestic$FT, domestic$FTA, method = c("pearson"))
+cor(domestic$FT.PG, domestic$FT, method = c("pearson"))
+cor(domestic$FT.PG, domestic$FTA, method = c("pearson"))
+```
+
+```{r}
+#high correlation between P3M and P3M attempted; remove P3MA in the model as P3M is important and at a similar correlation level with 
+cor(domestic$P3M, domestic$P3MA, method = c("spearman"), use = "pairwise.complete.obs")
+cor(domestic$P3.PG, domestic$P3M, method = c("spearman"), use = "pairwise.complete.obs")
+cor(domestic$P3.PG, domestic$P3MA, method = c("spearman"), use = "pairwise.complete.obs")
+```
+
+```{r}
+# same kind of correlation for the next period
+cor(domestic$FG.1, domestic$FGA.1, method = c("pearson"), use = "pairwise.complete.obs")
+cor(domestic$FG.PG1, domestic$FGA.1, method = c("pearson"), use = "pairwise.complete.obs")
+cor(domestic$FG.PG1, domestic$FG.1, method = c("pearson"), use = "pairwise.complete.obs")
+```
+```{r}
+#remove FG as it is highly correlated with PTS
+cor(domestic$FG, domestic$PTS, method = c("pearson"))
+```
+
+$
+```{r}
+cor(domestic$FG.PG, domestic$FG.PG1, method = c("pearson"),use = "pairwise.complete.obs")
+cor(domestic$P3M, domestic$P3M.1, method = c("pearson"),use = "pairwise.complete.obs")
+cor(domestic$SOS, domestic$SOS.1, method = c("pearson"),use = "pairwise.complete.obs")
+classyear <- as.numeric(domestic$Class.Year)
+cor(classyear, domestic$FG.PG, method = c("pearson"),use = "pairwise.complete.obs")
+```
+
+
+
+```{r}
+cleaned <- subset(cleaned, select = -c(FGA,FGA.1,FT,FT.1,P3MA,P3MA.1,FG,FG.1))
+test <- subset(test, select = -c(FGA,FGA.1,FT,FT.1,P3MA,P3MA.1,FG,FG.1))
+domestic <- subset(cleaned, !Class.Year == 'IN')
+```
+
+
+
+
+$$ MODEL \ BUILDING $$
+
+$ we start with Win Share (WS) as the outcome variable $
+
+```{r}
+#start with only 1 year of data and fit
+#domestic$P3.PG1 <- as.numeric(domestic$P3.PG1)
+model <- lm(WS.48 ~ Class.Year+Position+FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS++FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1, data = cleaned)
+summary(model)
+```
+
+```{r}
+#we observe a skew in the upper tail
+qqnorm(resid(model))
+qqline(resid(model))
+```
+$Show Evidence that outcome variable transformation is not needed $
+```{r}
+plot1 <- ggplot(data=cleaned, aes(WS)) + geom_histogram()+ggtitle("Distribution of WS")
+print(plot1 + labs(y="frequency", x = "WS"))
+
+plot2 <- ggplot(data=cleaned, aes(WS.48)) + geom_histogram()+ggtitle("Distribution of Win Share per 48 min")
+print(plot2 + labs(y="frequency", x = "WS/48"))
+
+#plot(model$fitted.values, model$resid, pch=16)
+plot3 <- ggplot(data=model,aes(x=model$fitted.values,y=model$resid))+geom_point()+ggtitle("Residuals v.s. Fitted Values")
+print(plot3 + labs(y="Model Residuals", x = "Fitted Values of WS/48"))
+```
+
+```{r}
+plot4 <- ggplot(data=cleaned, aes(BPM)) + geom_histogram()+ggtitle("Distribution of BPM")
+print(plot4 + labs(y="frequency", x = "BPM"))
+
+plot5 <- ggplot(data=cleaned, aes(BPM)) + geom_histogram()+ggtitle("Distribution of VORP")
+print(plot5 + labs(y="frequency", x = "VORP"))
+
+
+```
+
+```{r}
+library(leaps)
+library(car)
+All1 <- regsubsets(WS.48 ~ FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1, data = cleaned, method = "exhaustive",nbest=3)
+summary(All1)
+```
+
+```{r}
+#create a list to calculate RMSE from RSS/n - p
+num <- c(rep(1,3),rep(2,3),rep(3,3),rep(4,3),rep(5,3),rep(6,3),rep(7,3),rep(8,3),rep(9,3))
+denom <- nrow(cleaned) - num -1
+denom
+
+res.sum <- summary(All1)
+data.frame(
+  Adj.R2 = which.max(res.sum$adjr2),
+  CP = which.min(res.sum$cp),
+  BIC = which.min(res.sum$bic),
+  rmse = which.min(res.sum$rss/denom)
+)
+```
+
+
+```{r}
+#the variables in the model with the lowest RMSE
+opt.size <- which.min(res.sum$rss/denom)
+opt.size
+
+fit.exh.var <- res.sum$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[opt.size,]] # pull out the varialbe names
+```
+
+$WS: Final Model$
+```{r}
+model_RMSE <- lm(WS.48 ~ Class.Year + Position +FG.PG+FG.PG1+FT.PG1+TOV+TRB+STL, data = cleaned)
+summary(model_RMSE)
+```
+```{r}
+model_WOClass <- lm(WS.48 ~ Position +FG.PG+FG.PG1+FT.PG1+TOV+TRB+STL, data = cleaned)
+model_WOPosition <- lm(WS.48 ~ Class.Year +FG.PG+FG.PG1+FT.PG1+TOV+TRB+STL, data = cleaned)
+anova(model_WOClass, model_RMSE)
+anova(model_WOPosition, model_RMSE)
+```
+
+
+```{r}
+qqnorm(resid(model_RMSE))
+qqline(resid(model_RMSE))
+plot(model_RMSE$fitted.values, model_RMSE$resid, pch=16)
+```
+
+$WS: BIC Model$
+```{r}
+#the variables in the model with the lowest BIC
+bic.size <- which.min(res.sum$bic)
+bic.size
+
+fit.exh.var <- res.sum$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[bic.size,]] # pull out the varialbe names
+
+model_BIC <- lm(WS.48 ~ Class.Year + Position +FG.PG1 + FT.PG1 + TRB + TOV, data = cleaned)
+summary(model_BIC)
+```
+
+$WS: Cp Model$
+```{r}
+#the variables in the model with the lowest BIC
+cp.size <- which.min(res.sum$cp)
+cp.size
+
+fit.exh.var <- res.sum$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[cp.size,]] # pull out the varialbe names
+
+model_CP <- lm(WS.48 ~ Class.Year + Position +FG.PG + FG.PG1 + FT.PG1 + TRB + TOV, data = cleaned)
+summary(model_CP)
+```
+
+```{r}
+par(mfrow=c(3,1), mar=c(2.5,4,0.5,1), mgp=c(1.5,0.5,0))     # Compare different criteria 
+plot(res.sum$cp, xlab="Model No.", 
+     ylab="Cp", col="red", type="p", pch=16)
+plot(res.sum$bic, xlab="Model No.", 
+     ylab="BIC", col="blue", type="p", pch=16)
+plot(res.sum$rss/denom, xlab="Model No.", 
+     ylab="RMSE", col="green", type="p", pch=16)
+```
+
+$ we then use Box Plus Minus (BPM) as the outcome variable $
+```{r}
+#Note: I attempted to reorder the predictor to remove the linear dependencies. The reason why they still persisted is msotly because we set the cutoff for highly correlated variables at 0.9.
+
+
+All2 <- regsubsets(BPM ~ Class.Year+Position+FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS++FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1, data = cleaned, method = "exhaustive",nbest=3)
+#summary(All2)
+```
+```{r}
+res.sum2 <- summary(All2)
+data.frame(
+  Adj.R2 = which.max(res.sum2$adjr2),
+  CP = which.min(res.sum2$cp),
+  BIC = which.min(res.sum2$bic),
+  rmse = which.min(res.sum2$rss/denom)
+)
+```
+```{r}
+opt.size <- which.min(res.sum2$rss/denom)
+opt.size
+
+fit.exh.var <- res.sum2$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[opt.size,]] # pull out the varialbe names
+model_BPM <- lm(BPM ~ Class.Year + Position + FG.PG + FT.PG1 + TRB + TRB.1+STL.1+TOV.1, data = cleaned)
+summary(model_BPM)
+```
+
+```{r}
+All3 <- regsubsets(VORP ~ Class.Year+Position+FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS++FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1, data = cleaned, method = "exhaustive",nbest=3)
+#summary(All3)
+
+res.sum3 <- summary(All3)
+opt.size <- which.min(res.sum3$rss/denom)
+opt.size
+```
+
+```{r}
+fit.exh.var <- res.sum3$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[opt.size,]] # pull out the varialbe names
+model_VORP <- lm(VORP ~ Class.Year + Position +FG.PG1+P3.PG+TRB+AST+P3M.1+AST.1+STL.1, data = cleaned)
+summary(model_VORP)
+```
+
+$$ Model \ on \ Draft \ Order $$
+$linear model$
+```{r}
+FULL <- regsubsets(Rank ~ Class.Year+Position+FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS++FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1, data = cleaned, method = "exhaustive",nbest=3)
+#summary(FULL)
+
+res.sum4 <- summary(FULL)
+opt.size <- which.min(res.sum4$rss/denom)
+opt.size
+
+fit.exh.var <- res.sum4$which # logic indicators which variables are in
+colnames(fit.exh.var)[fit.exh.var[opt.size,]] # pull out the varialbe names
+
+model_Rank <- lm(Rank ~ Class.Year+FG.PG+P3.PG+STL+BLK+PTS+SOS+STL.1, data = cleaned)  #the lower the better
+summary(model_Rank)
+```
+
+$$ Recoding \ and \ Model \ Predition $$
+```{r}
+recoded <- cleaned
+#recoded2 <- cleaned
+
+recoded$Class.Year <- recode(cleaned$Class.Year, "'Freshman'='other';'IN'='other';'Junior'='other'")
+levels(recoded$Class.Year)
+#recoded2$Class.Year <- recode(cleaned$Class.Year,"'Freshman'='other';'IN'='other'")
+#levels(recoded$Class.Year)
+
+model_WS48 <- lm(WS.48 ~ Class.Year + Position +FG.PG+FG.PG1+FT.PG1+TOV+TRB+STL, data = recoded)
+summary(model_WS48)
+
+model_BPM <- lm(BPM ~ Class.Year + Position + FG.PG + FT.PG1 + TRB + TRB.1+STL.1+TOV.1, data = recoded)
+summary(model_BPM)
+
+model_VORP <- lm(VORP ~ Class.Year + Position +FG.PG1+P3.PG+TRB+AST+P3M.1+AST.1+STL.1, data = recoded)
+
+model_Rank <- lm(Rank ~ Class.Year+FG.PG+P3.PG+STL+BLK+PTS+SOS+STL.1, data = recoded)  #the lower the better
+summary(model_Rank)
+
+```
+```{r}
+newtest <- test
+newtest$Class.Year <- recode(test$Class.Year, "'Freshman'='other';'IN'='other';'Junior'='other'")
+
+
+fitted_WS48 <- predict(model_WS48,newdata = newtest)
+fitted_BPM <- predict(model_BPM,newdata = newtest)
+fitted_VORP <- predict(model_VORP,newdata = newtest)
+fitted_Rank <- predict(model_Rank,newdata = newtest)
+Player <- as.character(newtest$Player)
+ClassYear <- as.character(newtest$Class.Year)
+prediction <- cbind.data.frame(newtest$Rank, Player,ClassYear, fitted_Rank, newtest$WS.48,fitted_WS48, newtest$BPM, fitted_BPM, newtest$VORP, fitted_VORP)
+
+colnames(prediction)[1] <- "actual_Rank"
+colnames(prediction)[5] <- "actual_WS48"
+colnames(prediction)[7] <- "actual_BPM"
+colnames(prediction)[9] <- "actual_VORP"
+
+
+prediction <- na.omit(prediction)
+head(prediction)
+write.csv(prediction, "prediction.csv")
+```
+
+$$ Random \ Forest \ on \ Draft \ Rank$$
+
+$ Now We recode the draft rank into 1st round v.s. 2nd round and run random forest $
+```{r}
+rfcleaned <- cleaned
+rfcleaned$firstRound <- as.factor(ifelse(rfcleaned$Rank <= 30, "True", "False"))
+rfcleaned$lottery<- as.factor(ifelse(rfcleaned$Rank <= 15, "True", "False"))
+
+```
+$ We impute the missing data first
+```{r}
+set.seed(1)
+x <- rfcleaned[,c("Class.Year","Position","FG.PG","P3M","P3.PG","FTA","FT.PG","TRB","AST","STL","BLK","TOV","PTS","SOS","FG.PG1","P3M.1","P3.PG1","FTA.1","FT.PG1","TRB.1","AST.1","STL.1","BLK.1","TOV.1","PTS.1","SOS.1")]
+firstRound <- rfcleaned$firstRound
+rfimputed <- rfImpute(x, firstRound, iter=5, ntree=300)
+```
+
+```{r}
+#false positive: players drafted in 2nd round but mistaken for a 1st round prospect
+#favor cost ratio to false positive with a 2:1 ratio
+set.seed(1)
+rf1 <- randomForest(firstRound ~ FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = rfimputed,importance=T)
+# , sampsize = c(104,78)
+rf1 
+```
+```{r}
+#we use the mice package to recompute and compare results
+incomplete <- cbind.data.frame(firstRound, x)
+```
+```{r}
+tempData <- mice(incomplete,m=5,maxit=50,meth='pmm',seed=500)
+summary(tempData)
+```
+```{r}
+completedData <- complete(tempData,1)
+```
+
+```{r}
+set.seed(1)
+rf2 <- randomForest(firstRound ~ FG.PG+P3M+P3.PG+FTA+FT.PG+TRB+AST+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FG.PG1+P3M.1+P3.PG1+FTA.1+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,importance=T)
+# , sampsize = c(104,78)
+rf2
+```
+
+```{r fig.height=9}
+
+par(mfrow=c(2,2))
+varImpPlot(rf2,type=1,scale=F,class="True",
+main="Variable Importance Plot for First Rounder Outcome
+(Unstandardized)",col="blue",cex=0.65,pch=16)
+
+varImpPlot(rf2,type=1,scale=T,class="True",
+main="Variable Importance Plot for First Rounder Outcome
+(Standardized)",col="blue",cex=0.65,pch=16)
+title(xlab = "Mean Accuracy Decrease")
+
+varImpPlot(rf2,type=1,scale=F,class="False",
+main="Variable Importance Plot for Second Rounder Outcome
+(Unstandardized)",col="blue",cex=0.65,pch=16)
+title(xlab = "Mean Accuracy Decrease")
+
+varImpPlot(rf2,type=1,scale=T,class="False",
+main="Variable Importance Plot for Second Rounder Outcome
+(Standardized)",col="blue",cex=0.65,pch=16)
+title(xlab = "Mean Accuracy Decrease")
+
+```
+
+```{r}
+detach(package:dplyr)
+detach(package:MASS)
+detach(package:reshape2)
+detach(package:mice)
+```
+
+
+
+```{r fig.height=8}
+
+par(mfrow=c(2,2))
+partialPlot(rf2, completedData, x.var = Class.Year, rug=T, which.class="True", main = "Partial Dependence Plot for First Rounder on Class Year",
+ylab = "Centered Log Odds of First Rounder", xlab = "Class Year")
+
+partialPlot(rf2, completedData, x.var = Class.Year, rug=T, which.class="False", main = "Partial Dependence Plot for Second Rounder on Class Year",
+ylab = "Centered Log Odds of First Rounder", xlab = "Class Year")
+
+partialPlot(rf2, completedData, x.var = SOS, rug=T, which.class="True", main = "Partial Dependence Plot for First Rounder on SOS",
+ylab = "Centered Log Odds of First Rounder", xlab = "SOS")
+
+
+partialPlot(rf2, completedData, x.var = Position, rug=T, which.class="False", main = "Partial Dependence Plot for Second Rounder on Position",
+ylab = "Centered Log Odds of First Rounder", xlab = "Position")
+```
+
+
+```{r}
+set.seed(1)
+
+rf3 <-randomForest(firstRound ~ P3M+P3.PG+FTA+FT.PG+TRB+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,importance=T)
+rf3
+
+varImpPlot(rf3,type=1,scale=F,class="True",
+main="Variable Importance Plot for First Rounder Outcome
+(Unstandardized)",col="blue",cex=0.65,pch=16)
+```
+
+```{r}
+set.seed(1)
+rf4 <-randomForest(firstRound ~ P3M+P3.PG+FTA+FT.PG+TRB+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,sampsize = c(140,101),mtry =5,importance=T)
+rf4
+```
+
+```{r}
+set.seed(5)
+rf5 <-randomForest(firstRound ~ P3M+P3.PG+FTA+FT.PG+TRB+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,sampsize = c(210,140),mtry =5,importance=T)
+rf5
+```
+
+$  Model prediction $
+```{r}
+#recode first round and perform data imputation with mice
+rfcleaned <- test
+rfcleaned$firstRound <- as.factor(ifelse(rfcleaned$Rank <= 30, "True", "False"))
+rfcleaned$lottery<- as.factor(ifelse(rfcleaned$Rank <= 15, "True", "False"))
+
+x <- rfcleaned[,c("Class.Year","Position","FG.PG","P3M","P3.PG","FTA","FT.PG","TRB","AST","STL","BLK","TOV","PTS","SOS","FG.PG1","P3M.1","P3.PG1","FTA.1","FT.PG1","TRB.1","AST.1","STL.1","BLK.1","TOV.1","PTS.1","SOS.1")]
+firstRound <- rfcleaned$firstRound
+#we use the mice package to recompute and compare results
+incomplete <- cbind.data.frame(firstRound, x)
+
+tempData <- mice(incomplete,m=5,maxit=50,meth='pmm',seed=500)
+summary(tempData)
+```
+
+```{r}
+testFirst <- complete(tempData,1)
+summary(testFirst)
+```
+$Prediction Results $
+```{r}
+#Prediction Results
+result <- predict(rf4, testFirst,type="prob")
+tab <- table(testFirst$firstRound, result[,2]>0.5)
+tab
+prop.table(tab,1)
+
+```
+
+$ Breaak down into two sets $
+```{r}
+#drafts that are from 21 -40
+index <- c(21:40,81:100)
+actual <- testFirst$firstRound[index]
+predicted <- (result[,2]>0.5)[index]
+
+tab <- table(actual, predicted)
+tab
+prop.table(tab,1)
+```
+```{r}
+#drafts that are outside the 21-40 range
+index <- c(21:40,81:100)
+actual <- testFirst$firstRound[-index]
+predicted <- (result[,2]>0.5)[-index]
+
+tab <- table(actual, predicted)
+tab
+prop.table(tab,1)
+
+```
+
+$Stochastic Gradient Boosting$
+```{r}
+
+library(gbm)
+completedData$firstRound <- as.numeric(completedData$firstRound)
+```
+
+```{r}
+set.seed(1)
+gbm1 <- gbm(firstRound ~ P3M+P3.PG+FTA+FT.PG+TRB+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,distribution="bernoulli",n.trees=5000,interaction.depth = 1,n.minobsinnode = 1,shrinkage=.001,bag.fraction = 0.5, n.cores = 5)
+gbm1
+```
+```{r}
+gbm.perf(gbm1,oobag.curve=T,method="OOB",overlay=F)  #1925
+summary(gbm1,n.trees=2733,method=permutation.test.gbm, normalize=T,las=1)
+```
+
+
+```{r}
+preds_boost<-predict(gbm1,newdata=testFirst,n.trees=2733,type="response") 
+k <- table(testFirst$firstRound,preds_boost>.5)
+k
+prop.table(k,1)
+```
+
+```{r}
+gbm2 <- gbm(firstRound ~ P3M+P3.PG+FTA+FT.PG+TRB+STL+BLK+TOV+PTS+SOS+Class.Year+Position+FT.PG1+TRB.1+AST.1+STL.1+BLK.1+TOV.1+PTS.1+SOS.1,data = completedData,distribution="bernoulli",n.trees=2733,interaction.depth = 1,n.minobsinnode = 1,shrinkage=.001,bag.fraction = 0.5, n.cores = 5)
+gbm2
+```
+```{r}
+preds_boost<-predict(gbm2,newdata=testFirst,n.trees=2733,type="response") 
+k <- table(testFirst$firstRound,preds_boost>.5)
+k
+prop.table(k,1)
+```
+
+```{r}
+actual <- testFirst$firstRound[index]
+predicted <- preds_boost[index]
+
+tab <- table(actual, predicted>0.5)
+tab
+prop.table(tab,1)
+```
+```{r}
+actual <- testFirst$firstRound[-index]
+predicted <- preds_boost[-index]
+
+tab <- table(actual, predicted>0.5)
+tab
+prop.table(tab,1)
+```
+
+
+
+
+
+
+
